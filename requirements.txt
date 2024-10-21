@@ -1,0 +1,9 @@
+fastapi
+python-dotenv
+requests
+openai
+websockets
+uvicorn
+asyncio
+pyngrok
+pydub
