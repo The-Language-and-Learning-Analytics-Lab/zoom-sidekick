@@ -4,47 +4,53 @@ import base64
 from dotenv import load_dotenv
 import time
 
+
 class RecallAI:
     def __init__(self):
         # Load environment variables
         load_dotenv()
-        self.base_url = "https://us-east-1.recall.ai/api/v1/bot/"
+        self.base_url = "https://us-west-2.recall.ai/api/v1/bot/"
         self.headers = {
             "accept": "application/json",
             "content-type": "application/json",
-            "Authorization": f"{os.getenv('RECALL_API_KEY')}"
+            "Authorization": f"{os.getenv('RECALL_API_KEY')}",
         }
         self.id = None
 
     @staticmethod
     def generate_silence():
         # Generate a base64 encoded 1x1 transparent PNG image as silence
-        silence = b'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
-        return base64.b64encode(silence).decode('utf-8')
+        silence = b"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+        return base64.b64encode(silence).decode("utf-8")
 
-    def create(self, meeting_url, bot_name='Neil'):
+    def create(self, meeting_url, bot_name="Neil"):
         # Create a bot and join it to a meeting
         payload = {
             "meeting_url": meeting_url,
             "bot_name": bot_name,
             "automatic_audio_output": {
                 "in_call_recording": {
-                    "data": {
-                        "kind": "mp3",
-                        "b64_data": self.generate_silence()
-                    }
+                    "data": {"kind": "mp3", "b64_data": self.generate_silence()}
                 }
             },
-            "include_bot_in_recording": { 
-                "audio": False 
+            "recording_config": {
+                "realtime_endpoints": [
+                    {
+                        "type": "websocket",
+                        "url": f'wss://{os.getenv("WEBHOOK_URL").split("//")[1]}/audio',
+                        "events": ["audio_mixed_raw.data"],
+                    }
+                ],
+                "audio_mixed_raw": {"data": "mixed_raw_data"},
             },
-            "real_time_media": {
-                "websocket_audio_destination_url": f'wss://{os.getenv("WEBHOOK_URL").split("//")[1]}/audio'
-            }
+            # "include_bot_in_recording": {"audio": False},
+            # "real_time_media": {
+            #     "websocket_audio_destination_url": f'wss://{os.getenv("WEBHOOK_URL").split("//")[1]}/audio'
+            # },
         }
-        
+
         response = requests.post(self.base_url, headers=self.headers, json=payload)
-        self.id = response.json()['id']
+        self.id = response.json()["id"]
         return self.id
 
     def retrieve(self):
@@ -56,7 +62,7 @@ class RecallAI:
     def get_meeting_participants(self):
         # Get the list of participants in the meeting
         bot_response = self.retrieve()
-        return bot_response['meeting_participants']
+        return bot_response["meeting_participants"]
 
     def send_chat_message(self, message, to_speaker=None):
         # Send a chat message in the meeting
@@ -70,19 +76,18 @@ class RecallAI:
     def output_audio(self, base64_audio):
         # Output audio in the meeting
         url = self.base_url + self.id + "/output_audio"
-        payload = {
-            "b64_data": base64_audio,
-            "kind": "mp3"
-        }
+        payload = {"b64_data": base64_audio, "kind": "mp3"}
         print(f"Sending request to {url}")
         print(f"Payload size: {len(str(payload))} characters")
-        
+
         # Check if payload exceeds maximum allowed length
-        if len(payload['b64_data']) > 1835008:
-            print(f"Warning: b64_data exceeds maximum allowed length of 1835008 characters")
+        if len(payload["b64_data"]) > 1835008:
+            print(
+                f"Warning: b64_data exceeds maximum allowed length of 1835008 characters"
+            )
             print(f"Payload size: {len(payload['b64_data'])} characters")
-            payload['b64_data'] = payload['b64_data'][:1000000]
-        
+            payload["b64_data"] = payload["b64_data"][:1000000]
+
         try:
             start = time.time()
             response = requests.post(url, headers=self.headers, json=payload)
@@ -94,9 +99,11 @@ class RecallAI:
             return response.json()
         except requests.exceptions.RequestException as e:
             print(f"Error outputting audio: {e}")
-            print(f"Response content: {response.text if 'response' in locals() else 'No response'}")
+            print(
+                f"Response content: {response.text if 'response' in locals() else 'No response'}"
+            )
             return None
-        
+
     def stop_audio(self):
         # Stop audio output
         url = self.base_url + self.id + "/output_audio"
@@ -105,6 +112,6 @@ class RecallAI:
 
     def remove(self):
         # Remove the bot from the call
-        url = self.base_url + self.id + '/leave_call'
+        url = self.base_url + self.id + "/leave_call"
         response = requests.post(url, headers=self.headers)
         return response.json()
