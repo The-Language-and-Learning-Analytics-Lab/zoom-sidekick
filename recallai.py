@@ -9,48 +9,64 @@ class RecallAI:
     def __init__(self):
         # Load environment variables
         load_dotenv()
-        self.base_url = "https://us-west-2.recall.ai/api/v1/bot/"
+        region = os.getenv("RECALL_REGION", "us-west-2").strip()
+        self.base_url = f"https://{region}.recall.ai/api/v1/bot/"
         self.headers = {
             "accept": "application/json",
             "content-type": "application/json",
-            "Authorization": f"{os.getenv('RECALL_API_KEY')}",
+            "Authorization": f"Token {os.getenv('RECALL_API_KEY')}",
         }
         self.id = None
 
     @staticmethod
-    def generate_silence():
-        # Generate a base64 encoded 1x1 transparent PNG image as silence
-        silence = b"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
-        return base64.b64encode(silence).decode("utf-8")
+    def get_silent_mp3_b64():
+        """
+        Return a short silent MP3 as base64. Set RECALL_SILENT_MP3_B64 in your env.
+        Required by Recall to enable the Output Audio endpoint even if you don't
+        actually want automatic playback. See docs: Output Audio.
+        """
+        b64 = os.getenv("RECALL_SILENT_MP3_B64", "").strip()
+        if not b64:
+            print(
+                "[RecallAI] Warning: RECALL_SILENT_MP3_B64 is not set. "
+                "automatic_audio_output will use an empty placeholder which may be rejected."
+            )
+        return b64
 
     def create(self, meeting_url, bot_name="Neil"):
         # Create a bot and join it to a meeting
         payload = {
             "meeting_url": meeting_url,
             "bot_name": bot_name,
+            # Required to later call POST /bot/{id}/output_audio/
             "automatic_audio_output": {
                 "in_call_recording": {
-                    "data": {"kind": "mp3", "b64_data": self.generate_silence()}
+                    "data": {
+                        "kind": "mp3",
+                        "b64_data": self.get_silent_mp3_b64(),
+                    }
                 }
             },
             "recording_config": {
+                # Enable mixed raw audio generation (16 kHz mono, S16LE)
+                "audio_mixed_raw": {},
+                # Register a realtime WebSocket endpoint to receive audio packets
                 "realtime_endpoints": [
                     {
                         "type": "websocket",
-                        "url": f'wss://{os.getenv("WEBHOOK_URL").split("//")[1]}/audio',
+                        "url": f"wss://{os.getenv('WEBHOOK_URL').split('//')[1]}/audio",
                         "events": ["audio_mixed_raw.data"],
                     }
                 ],
-                "audio_mixed_raw": {"data": "mixed_raw_data"},
             },
-            # "include_bot_in_recording": {"audio": False},
-            # "real_time_media": {
-            #     "websocket_audio_destination_url": f'wss://{os.getenv("WEBHOOK_URL").split("//")[1]}/audio'
-            # },
         }
 
         response = requests.post(self.base_url, headers=self.headers, json=payload)
-        self.id = response.json()["id"]
+        response.raise_for_status()
+        data = response.json()
+        self.id = data.get("id")
+        if not self.id:
+            raise RuntimeError(f"Failed to create bot: {data}")
         return self.id
 
     def retrieve(self):
@@ -75,7 +91,7 @@ class RecallAI:
 
     def output_audio(self, base64_audio):
         # Output audio in the meeting
-        url = self.base_url + self.id + "/output_audio"
+        url = self.base_url + self.id + "/output_audio/"
         payload = {"b64_data": base64_audio, "kind": "mp3"}
         print(f"Sending request to {url}")
         print(f"Payload size: {len(str(payload))} characters")
@@ -106,12 +122,12 @@ class RecallAI:
 
     def stop_audio(self):
         # Stop audio output
-        url = self.base_url + self.id + "/output_audio"
+        url = self.base_url + self.id + "/output_audio/"
         response = requests.delete(url, headers=self.headers)
         return response.text, response.status_code
 
     def remove(self):
         # Remove the bot from the call
-        url = self.base_url + self.id + "/leave_call"
+        url = self.base_url + self.id + "/leave_call/"
         response = requests.post(url, headers=self.headers)
         return response.json()

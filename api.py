@@ -9,6 +9,7 @@ from pyngrok import ngrok
 from openai import OpenAIRealtime
 from pydub import AudioSegment
 import io
+import json
 import time
 
 # Initialize FastAPI app
@@ -60,25 +61,35 @@ async def realtime_message_handler(message):
     Handle real-time messages from the OpenAI WebSocket.
     """
     global audio_buffer
-    print()
-    if message.get("type") == "response.audio.delta":
-        content = message.get("delta", None)  # str of base64 audio data
-        if content is not None:
-            audio_buffer += content
-    elif message.get("type") == "response.audio.done":
-        print(
-            f"Sending audio to bot {recallai.id}. Base64 audio size: {len(audio_buffer)} characters"
-        )
+    t = message.get("type")
 
-        # start = time.time()
-        # converted_audio = convert_audio_to_mp3(audio_buffer)
-        # end = time.time()
-        # print(f"Time taken to convert audio: {end - start} seconds")
+    print(f"🤖 OpenAI Realtime message type: {t}")
 
-        # result = recallai.output_audio(converted_audio)
-        result = recallai.output_audio(audio_buffer)
-        print(f"Result from output_audio: {result}")
+    # AUDIO OUT (streaming)
+    if t == "response.output_audio.delta":
+        delta = message.get("delta")
+        if delta:
+            audio_buffer += delta
+            print(
+                f"🎵 Audio delta received: {len(delta)} chars, total buffer: {len(audio_buffer)}"
+            )
+
+    elif t == "response.output_audio.done":
+        # If output_audio_format == "mp3", this buffer is already base64 MP3
+        print(f"🎵 Audio response complete! Base64 MP3 size: {len(audio_buffer)}")
+        print(f"📤 Sending audio to bot {recallai.id}")
+        result = recallai.output_audio(audio_buffer)  # <-- send as-is (no re-encoding)
+        print(f"📤 Result from output_audio: {result}")
         audio_buffer = ""
+
+    elif t == "response.done":
+        print("✅ OpenAI response completed")
+
+    elif t == "error":
+        print(f"❌ OpenAI error: {message}")
+
+    else:
+        print(f"📨 Other OpenAI message: {t}")
 
 
 @app.on_event("startup")
@@ -92,6 +103,48 @@ async def startup_event():
     print(f"Recall.ai Bot ID: {recallai.id}")
 
 
+@app.get("/debug/status")
+async def debug_status():
+    """
+    Debug endpoint to check system status.
+    """
+    return {
+        "recallai_connected": recallai.id is not None,
+        "recallai_id": recallai.id,
+        "openai_ws_connected": oai_realtime_ws.ws is not None
+        and not oai_realtime_ws.ws.closed,
+        "audio_buffer_size": len(audio_buffer),
+        "webhook_url": os.getenv("WEBHOOK_URL"),
+        "zoom_meeting_url": os.getenv("ZOOM_MEETING_URL"),
+    }
+
+
+@app.get("/debug/test-audio")
+async def test_audio():
+    """
+    Test endpoint to send a test message to OpenAI Realtime.
+    """
+    if not oai_realtime_ws.ws or oai_realtime_ws.ws.closed:
+        return {"error": "OpenAI WebSocket not connected"}
+
+    # Send a test text message
+    test_message = "Hello, this is a test message from the debug endpoint."
+    await oai_realtime_ws.ws.send_str(
+        json.dumps(
+            {
+                "type": "conversation.item.create",
+                "item": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": test_message}],
+                },
+            }
+        )
+    )
+
+    return {"message": "Test message sent to OpenAI Realtime"}
+
+
 @app.websocket("/audio")
 async def audio_endpoint(websocket: WebSocket):
     """
@@ -99,12 +152,16 @@ async def audio_endpoint(websocket: WebSocket):
     """
     await websocket.accept()
 
-    if not oai_realtime_ws.ws or not oai_realtime_ws.ws.open:
-        print("Realtime WebSocket not connected, connecting...")
+    if not oai_realtime_ws.ws:  # or not oai_realtime_ws.ws.open:
+        print("🔌 Realtime WebSocket not connected, connecting...")
         await oai_realtime_ws.connect()
+        print("✅ OpenAI Realtime WebSocket connected")
+    else:
+        print("✅ OpenAI Realtime WebSocket already connected")
 
     # Create a partial function with the websocket parameter
-    handler = lambda message: realtime_message_handler(message)
+    def handler(message):
+        return realtime_message_handler(message)
 
     # Start receiving messages from RealtimeWebSocket in the background
     receive_task = asyncio.create_task(oai_realtime_ws.receive_messages(handler))
@@ -112,13 +169,19 @@ async def audio_endpoint(websocket: WebSocket):
     try:
         while True:
             message = await websocket.receive()
+            print(f"🔍 WebSocket message received: {message['type']}")
+
             if message["type"] == "websocket.disconnect":
+                print("❌ WebSocket disconnected")
                 break
             elif message["type"] == "websocket.receive":
                 if "bytes" in message:
                     audio_data = message["bytes"]
+                    # audio_data = json.loads(message["text"])["data"]["data"]["buffer"]
+                    # base64_audio = audio_data
                     base64_audio = base64.b64encode(audio_data).decode("utf-8")
                     await oai_realtime_ws.send_audio(base64_audio)
+                    await oai_realtime_ws.commit_and_respond()
     except WebSocketDisconnect:
         print("WebSocket disconnected")
     finally:

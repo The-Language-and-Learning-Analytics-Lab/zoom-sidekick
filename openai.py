@@ -16,6 +16,17 @@ class OpenAIRealtime:
         }
         self.session = None
 
+    # add to your OpenAIRealtime class
+    async def commit_audio(self):
+        if self.ws and not self.ws.closed:
+            await self.ws.send_str('{"type":"input_audio_buffer.commit"}')
+
+    async def commit_and_respond(self):
+        # convenience helper: commit current input and trigger a response
+        if self.ws and not self.ws.closed:
+            await self.ws.send_str('{"type":"input_audio_buffer.commit"}')
+            await self.ws.send_str('{"type":"response.create"}')
+
     def on_open(self, ws):
         print("Connected to server.")
 
@@ -60,7 +71,7 @@ class OpenAIRealtime:
                                 "prefix_padding_ms": 100,
                                 "silence_duration_ms": 100,
                             },
-                            "voice": "nova",  # Specify the voice to be used
+                            "voice": "ash",  # Specify the voice to be used
                             "input_audio_transcription": {"enabled": True},
                         },
                     }
